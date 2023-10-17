@@ -15,7 +15,8 @@ resource "google_project_service" "consumer_service" {
   for_each = toset([
     "compute.googleapis.com",
     "servicedirectory.googleapis.com",
-    "dns.googleapis.com"
+    "dns.googleapis.com",
+    "certificatemanager.googleapis.com"
   ])
 
   service            = each.key
@@ -50,7 +51,7 @@ resource "google_compute_subnetwork" "psc_subnet" {
   region        = local.region-a
   ip_cidr_range = "10.10.100.0/24"
   network       = google_compute_network.consumer_vpc_network.id
-  purpose       = "REGIONAL_MANAGED_PROXY"
+  purpose       = "GLOBAL_MANAGED_PROXY"
   role          = "ACTIVE"
 }
 
@@ -154,12 +155,24 @@ resource "tls_self_signed_cert" "consumer" {
 
 resource "google_compute_region_ssl_certificate" "consumer" {
   project     = google_project.consumer.project_id
+  region      = local.region-a
   name_prefix = "my-certificate-"
   private_key = tls_private_key.consumer.private_key_pem
   certificate = tls_self_signed_cert.consumer.cert_pem
-  region      = local.region-a
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+resource "google_certificate_manager_certificate" "consumer" {
+  name        = "sg-self-managed-cert"
+  
+  project         = google_project.consumer.project_id
+  description = "Self managed SG cert"
+  scope       = "ALL_REGIONS"
+  self_managed {
+    pem_certificate = tls_self_signed_cert.consumer.cert_pem
+    pem_private_key = tls_private_key.consumer.private_key_pem
   }
 }
 
@@ -185,14 +198,14 @@ resource "google_compute_region_network_endpoint_group" "p2_psc_neg_service_atta
   subnetwork = google_compute_subnetwork.consumer_sb_subnet_a.self_link
 }
 
-resource "google_compute_region_backend_service" "sg_psc_backend" {
+resource "google_compute_backend_service" "sg_psc_backend" {
   name                            = "sg-psc-backend"
   project                         = google_project.consumer.project_id
   connection_draining_timeout_sec = 0
   load_balancing_scheme           = "INTERNAL_MANAGED"
   port_name                       = "my-https"
   protocol                        = "HTTPS"
-  region                          = local.region-a
+#  region                          = local.region-a
   session_affinity                = "NONE"
   timeout_sec                     = 30
   
@@ -209,40 +222,24 @@ resource "google_compute_region_backend_service" "sg_psc_backend" {
   }
 }
 
-
-# resource "google_compute_region_backend_service" "p2_sg_psc_backend" {
-#   name                            = "sg-psc-backend"
-#   project                         = google_project.consumer.project_id
-#   connection_draining_timeout_sec = 0
-#   load_balancing_scheme           = "INTERNAL_MANAGED"
-#   port_name                       = "my-https"
-#   protocol                        = "HTTPS"
-#   region                          = local.region-a
-#   session_affinity                = "NONE"
-#   timeout_sec                     = 30
-  
-#   backend {
-#     group           = google_compute_region_network_endpoint_group.p2_psc_neg_service_attachment.id
-#     balancing_mode  = "UTILIZATION"
-#     capacity_scaler = 1.0
-#   }
-# }
-
-
-resource "google_compute_region_url_map" "sg_lb" {
+resource "google_compute_url_map" "sg_lb" {
   name            = "sg-lb"
   project         = google_project.consumer.project_id
-  region          = local.region-a
-  default_service = google_compute_region_backend_service.sg_psc_backend.self_link
+#  region          = local.region-a
+  default_service = google_compute_backend_service.sg_psc_backend.self_link
 }
 
-resource "google_compute_region_target_https_proxy" "sg_lb_target_proxy" {
+
+
+
+resource "google_compute_target_https_proxy" "sg_lb_target_proxy" {
+  provider = google-beta
   name    = "sg-lb-target-proxy"
   project = google_project.consumer.project_id
-  region  = local.region-a
-  url_map = google_compute_region_url_map.sg_lb.self_link
+  url_map = google_compute_url_map.sg_lb.self_link
+# https://b.corp.google.com/issues/299997560
+  certificate_manager_certificates = ["//certificatemanager.googleapis.com/${google_certificate_manager_certificate.consumer.id}"]
   
-  ssl_certificates = [google_compute_region_ssl_certificate.consumer.self_link]
 }
 
 # reserved IP address
@@ -257,19 +254,18 @@ resource "google_compute_address" "psc_ilb_consumer_address" {
 
 }
 
-resource "google_compute_forwarding_rule" "sg_lb_forwarding_rule" {
+resource "google_compute_global_forwarding_rule" "sg_lb_forwarding_rule" {
   name                  = "sg-lb-forwarding-rule"
+  provider              = google-beta
   project = google_project.consumer.project_id
- # allow_global_access   = true
   ip_address            = google_compute_address.psc_ilb_consumer_address.id
   ip_protocol           = "TCP"
   load_balancing_scheme = "INTERNAL_MANAGED"
   network               = google_compute_network.consumer_vpc_network.name
   port_range            = "443"
-  region                = local.region-a
   subnetwork            = google_compute_subnetwork.consumer_sb_subnet_a.self_link
-  target                = google_compute_region_target_https_proxy.sg_lb_target_proxy.self_link
-}
+  target                = google_compute_target_https_proxy.sg_lb_target_proxy.self_link
+} 
 
 
 ######################## SIEGE HOST ################

@@ -1,20 +1,12 @@
 # Topology comprises 3 projects:
 # - project for consumer
 # - projects for producer-1 and producer-2
-# Every producer and consumer are in different regions
+# Every producer and consumer can be in in different regions
 # region_a - consumer
 # region_b - producer-1
 # region_c - producer-2
 #
-#
-# DOES NOT WORK AT THE MOMENT - 13.10.2023
-# │ Error: Error creating RegionBackendService: googleapi: Error 400: Invalid value for field 'resource.backends[0]': '{  "group": "projects/consumer-sgb08c31f5/regions/europe-west2/networkEndpointGroups/p1-psc-neg",  "...'. Regional Backend services using Private Service Connect Network Endpoint Group as backends may only have 1 backend. Request contains multiple backends., invalid
-# │ 
-# │   with google_compute_region_backend_service.sg_psc_backend,
-# │   on consumer.tf line 188, in resource "google_compute_region_backend_service" "sg_psc_backend":
-# │  188: resource "google_compute_region_backend_service" "sg_psc_backend" {
-
-
+#CAVEAT: CROSS project is working only in a single region (Service Attachment region must equal PSC NEG region)
 
 
 locals {
@@ -33,7 +25,10 @@ locals {
 }
 
 provider "google" {
-#  region = var.region
+}
+
+
+provider "google-beta" {
 }
 
 resource "random_id" "id" {
